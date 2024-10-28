@@ -1,0 +1,194 @@
+---
+title: "Week 5 Lab"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+# Load packages
+library(sf) # vector handling
+library(terra) # raster handling
+library(tidyverse)
+library(tmap) # map making
+library(spData) # spatial data
+library(spDataLarge) # spatial data
+library(viridisLite)
+```
+
+We’ll load the following data from the {spDataLarge} package:
+
+srtm.tif: remotely sensed elevation estimates (raster data)
+zion.gpkg: boundary of Zion National Park (vector data)
+
+```{r}
+# load raster dataset
+elevation <- rast(system.file("raster/srtm.tif", package = "spDataLarge"))
+
+# load vector dataset
+boundary <- read_sf(system.file("vector/zion.gpkg", package = "spDataLarge"))
+```
+
+Whenever we work with multiple spatial datasets, we need check that the coordinate reference systems match. If they don’t, we need to transform one to match the other.
+
+```{r}
+# check if coordinate reference systems match
+if(crs(elevation) == crs(boundary)) {
+  print("Coordinate reference systems match")
+} else{
+  warning("Updating coordinate reference systems to match")
+  # transform data to match
+  boundary <- st_transform(boundary, st_crs(elevation))
+}
+```
+
+```{r}
+# Preliminary visualization
+tm_shape(elevation) +
+  tm_raster(title = "Elevation (meters)") +
+tm_shape(boundary) +
+  tm_borders(lwd = 2) +
+tm_layout(legend.outside = TRUE)
+```
+
+## Raster cropping
+
+First, let’s crop the extent of the elevation raster to match the extent of Zion’s boundaries. Through this process, we eliminate grid cells that fall outside the extent of the park and reduce the size of the raster. To do so, we use the terra::crop() function.
+
+```{r}
+# crop raster to extent of vector object
+elevation_cropped <- crop(elevation, boundary)
+
+tm_shape(elevation_cropped) +
+  tm_raster(title = "Elevation (meters)") +
+tm_shape(boundary) +
+  tm_borders(lwd = 2) +
+tm_layout(legend.outside = TRUE)
+```
+
+Beyond matching the extent, we can also set the values of raster cells outside of the boundaries or the park to NA using terra::mask()
+
+```{r}
+# mask raster based on vector object
+# (cells outside of vector are converted to NA)
+
+elevation_masked <- terra::mask(elevation_cropped, boundary)
+
+tm_shape(elevation_masked) +
+  tm_raster(title = "Elevation (meters)") +
+tm_shape(boundary) +
+  tm_borders(lwd = 2) +
+tm_layout(legend.outside = TRUE)
+```
+
+In some cases, we may want to mask the raster cells inside of the boundaries (i.e. assign cells inside the park to NA). We can do so with terra::mask() by setting the argument inverse = TRUE.
+
+```{r}
+# mask raster based on vector object
+# (cells inside of vector are converted to NA)
+elevation_inv_masked <- mask(elevation_cropped, boundary, inverse = TRUE)
+
+tm_shape(elevation_inv_masked) +
+  tm_raster(title = "Elevation (meters)") +
+tm_shape(boundary) +
+  tm_borders(lwd = 2) +
+tm_layout(legend.outside = TRUE)
+```
+
+## Raster vectorization
+
+In this example, we’ll select grid cells higher than 2000 meters by masking the elevation raster. We’ll then convert these grid cells into polygons using the terra::as.polygons() function and turn this into a sf object.
+
+```{r}
+# masking to cells inside of park
+elevation_inside <- mask(elevation_cropped, boundary)
+
+# create mask based on values of cells 
+elevation_mask <- elevation_inside
+elevation_mask[elevation_mask < 2000] <- NA 
+
+elevation_mask_poly <- terra::as.polygons(elevation_mask) |>
+  st_as_sf()
+
+tm_shape(elevation_mask_poly) +
+  tm_polygons() +
+  tm_layout(legend.outside = TRUE)
+```
+
+Extract values from points inside the park
+
+```{r}
+data("zion_points", package = "spDataLarge")
+
+zion_points
+
+crs(zion_points) == crs(elevation)
+
+zion_points <- st_transform(zion_points, crs = st_crs(elevation))
+```
+
+```{r}
+tm_shape(elevation) +
+  tm_raster() +
+  tm_shape(boundary) +
+  tm_borders() +
+  tm_shape(zion_points) +
+  tm_symbols()
+```
+
+What is the elevation at each of these points?
+
+```{r}
+# Gives each point an ID and makes into a dataframe - we lost our geometry!
+pts_elevation <- terra::extract(elevation, zion_points)
+
+# Link back to sf object
+zion_points <- cbind(zion_points, pts_elevation)
+```
+
+Extract elevation along a transect
+
+```{r}
+# create line geometry that we will extract along
+zion_transect <- cbind(c(-133.2, -112.9),
+                       c(37.45, 37.2)) |>
+  st_linestring() |>
+  st_sfc(crs = crs(elevation)) |>
+  st_sf(geometry = _)
+
+  
+tm_shape(elevation) +
+  tm_raster() +
+  tm_shape(zion_transect) +
+  tm_lines()
+
+
+zion_transect$id = 1:nrow(zion_transect)
+zion_transect <- st_segmentize(zion_transect, dfMaxLength = 250)
+zion_transect <- st_cast(zion_transect, "POINT")
+
+tm_shape(elevation) +
+  tm_raster() +
+  tm_shape(zion_transect) +
+  tm_symbols()
+zion_transect <- zion_transect %>%
+  group_by(id) %>%
+  mutate(dist = st_distance(geometry)[,1])
+
+transect <- terra::extract(elevation, zion_transect)
+zion_transect <- cbind(zion_transect, transect)
+
+ggplot(zion_transect, aes(x = ID, y = elevation) +
+  geom_point()
+```
+
+
+
+
+
+
+
+
+
+
+
